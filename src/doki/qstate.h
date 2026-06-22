@@ -1,26 +1,9 @@
-/** \file qstate.h
- *  \brief Functions and structures needed to define a quantum state.
- *
- *  In this file some functions and structures have been defined
- *  to create and destroy a quantum state vector.
- */
-
-/** \def __QSTATE_H
- *  \brief Indicates if qstate.h has already been loaded.
- *
- *  If __QSTATE_H is defined, qstate.h file has already been included.
- */
-
-/** \struct array_list qstate.h "qstate.h"
- *  \brief List of complex number arrays.
- *  A list of complex number arrays (chunks).
- */
-
 #pragma once
 #ifndef QSTATE_H_
 #define QSTATE_H_
 
 #include "platform.h"
+#include <mpi.h>
 #include <stdbool.h>
 
 struct state_vector
@@ -39,36 +22,30 @@ struct state_vector
   bool fcarg_init;
   /* first complex argument */
   REAL_TYPE fcarg;
+  /* MPI: tamaño global del vector */
+  NATURAL_TYPE global_size;
+  /* MPI: tamaño local de este proceso */
+  NATURAL_TYPE local_size;
+  /* MPI: vector local plano */
+  COMPLEX_TYPE *local_vector;
+  /* MPI: rank de este proceso */
+  int rank;
+  /* MPI: número total de procesos */
+  int nprocs;
 };
 
-/** \fn unsigned char state_init(struct state_vector *this, unsigned int
- * num_qubits, int init); \brief Initialize a state vector structure. \param
- * this Pointer to an already allocated state_vector structure. \param
- * num_qubits The number of qubits represented by this state (a maximum of
- * MAX_NUM_QUBITS). \param init Whether to initialize to {1, 0, ..., 0} or not.
- *  \return 0 if ok, 1 if failed to allocate vector, 2 if failed to allocate
- * any chunk, 3 if num_qubits > MAX_NUM_QUBITS.
- */
 unsigned char state_init (struct state_vector *this, unsigned int num_qubits,
                           int init);
-
-/** \fn unsigned char state_clone(struct state_vector *dest, struct
- * state_vector *source); \brief Clone a state vector structure. \param dest
- * Pointer to an already allocated state_vector structure i which the copy will
- * be stored. \param source Pointer to the state_vector structure that has to
- * be cloned. \return 0 if ok, 1 if failed to allocate dest vector, 2 if failed
- * to allocate any chunk.
- */
 unsigned char state_clone (struct state_vector *dest,
                            struct state_vector *source);
-
 void state_clear (struct state_vector *this);
-
 void state_set (struct state_vector *this, NATURAL_TYPE i, COMPLEX_TYPE value);
-
-COMPLEX_TYPE
-state_get (struct state_vector *this, NATURAL_TYPE i);
-
+COMPLEX_TYPE state_get (struct state_vector *this, NATURAL_TYPE i);
 size_t state_mem_size (struct state_vector *this);
+
+/* Nuevas funciones MPI */
+void state_init_mpi (struct state_vector *this);
+COMPLEX_TYPE pdget (struct state_vector *this, NATURAL_TYPE i);
+void pdset (struct state_vector *this, NATURAL_TYPE i, COMPLEX_TYPE value);
 
 #endif /* QSTATE_H_ */
