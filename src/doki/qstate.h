@@ -44,8 +44,10 @@ COMPLEX_TYPE state_get (struct state_vector *this, NATURAL_TYPE i);
 size_t state_mem_size (struct state_vector *this);
 
 /* Nuevas funciones MPI */
-void state_init_mpi (struct state_vector *this);
+void state_init_mpi (struct state_vector *this, int init);
 COMPLEX_TYPE pdget (struct state_vector *this, NATURAL_TYPE i);
 void pdset (struct state_vector *this, NATURAL_TYPE i, COMPLEX_TYPE value);
+
+COMPLEX_TYPE *pdgather (struct state_vector *this);
 
 #endif /* QSTATE_H_ */

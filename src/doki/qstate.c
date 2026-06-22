@@ -86,7 +86,7 @@ state_init (struct state_vector *this, unsigned int num_qubits, int init)
     }
 
   /* AÑADIDO: inicializar la distribución MPI del vector de estado */
-  state_init_mpi (this);
+  state_init_mpi (this, init);
 
   return 0;
 }
@@ -179,7 +179,7 @@ state_mem_size (struct state_vector *this)
  * Obtiene el rank y el número de procesos, calcula cuántos elementos
  * corresponden a cada proceso y reserva el vector local. */
 void
-state_init_mpi (struct state_vector *this)
+state_init_mpi (struct state_vector *this, int init)
 {
   NATURAL_TYPE base, rem;
 
@@ -203,6 +203,10 @@ state_init_mpi (struct state_vector *this)
   /* Inicializar a cero (malloc no limpia memoria) */
   for (NATURAL_TYPE i = 0; i < this->local_size; i++)
     this->local_vector[i] = COMPLEX_ZERO;
+
+  /* Solo el proceso 0 tiene la amplitud 1 en la posicion 0 */
+  if (init && this->rank != 0)
+    this->vector[0][0] = COMPLEX_ZERO;
 
   printf ("Soy proc %d, tam global %lld, tam local %lld\n",
           this->rank, (long long)this->global_size,
@@ -281,4 +285,39 @@ pdset (struct state_vector *this, NATURAL_TYPE i, COMPLEX_TYPE value)
     {
       this->vector[local_i / COMPLEX_ARRAY_SIZE][local_i % COMPLEX_ARRAY_SIZE] = value;
     }
+}
+
+/* pdgather: recopila el vector completo en todos los procesos.
+ * Cada proceso comparte su parte con todos los demás usando MPI_Allgather.
+ * Devuelve un array con el vector completo que hay que liberar con free(). */
+COMPLEX_TYPE *
+pdgather (struct state_vector *this)
+{
+  COMPLEX_TYPE *full_vector = malloc (this->global_size * sizeof (COMPLEX_TYPE));
+
+  int *recvcounts = malloc (this->nprocs * sizeof (int));
+  int *displs = malloc (this->nprocs * sizeof (int));
+
+  NATURAL_TYPE base = this->global_size / this->nprocs;
+  NATURAL_TYPE rem  = this->global_size % this->nprocs;
+
+  for (int p = 0; p < this->nprocs; p++)
+    {
+      recvcounts[p] = (p < (int)rem) ? (int)(base + 1) : (int)base;
+      displs[p] = (p == 0) ? 0 : displs[p-1] + recvcounts[p-1];
+    }
+
+  COMPLEX_TYPE *send_buf = malloc (this->local_size * sizeof (COMPLEX_TYPE));
+  for (NATURAL_TYPE i = 0; i < this->local_size; i++)
+    send_buf[i] = this->vector[i / COMPLEX_ARRAY_SIZE][i % COMPLEX_ARRAY_SIZE];
+
+  MPI_Allgatherv (send_buf, (int)this->local_size, MPI_DOUBLE_COMPLEX,
+                  full_vector, recvcounts, displs, MPI_DOUBLE_COMPLEX,
+                  MPI_COMM_WORLD);
+
+  free (send_buf);
+  free (recvcounts);
+  free (displs);
+
+  return full_vector;
 }
