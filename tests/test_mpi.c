@@ -137,6 +137,23 @@ void test_gate(int num_qubits, unsigned int target_qubit,
     state_clear(&sv);
     state_clear(&new_sv);
 }
+void test_tiempo(int num_qubits, int rank)
+{
+    struct state_vector sv;
+    state_init(&sv, num_qubits, 1);
+    state_init_mpi(&sv, 1);
+    struct qgate h = build_hadamard();
+    struct state_vector new_sv;
+    unsigned int target = 0;
+    double t_start = MPI_Wtime();
+    apply_gate(&sv, &h, &target, 1, NULL, 0, NULL, 0, &new_sv);
+    double t_end = MPI_Wtime();
+    if (rank == 0)
+        printf("=== %d qubits: tiempo = %f segundos ===\n", num_qubits, t_end - t_start);
+    free(h.matrix[0]); free(h.matrix[1]); free(h.matrix);
+    state_clear(&sv); state_clear(&new_sv);
+    sleep(1);
+}
 
 int main(int argc, char **argv)
 {
@@ -183,6 +200,14 @@ sleep(1);
 /* Test escalabilidad */
 test_hadamard_pos(7, 0, 0, rank);
 sleep(1);
+/* Tests de tiempo para gráficas */
+test_tiempo(3, rank);
+test_tiempo(5, rank);
+test_tiempo(7, rank);
+test_tiempo(10, rank);
+test_tiempo(12, rank);
+test_tiempo(14, rank);
+test_tiempo(16, rank);
 
     /* Tests puerta X */
     struct qgate x = build_X();
@@ -191,6 +216,41 @@ sleep(1);
     free(x.matrix[0]); free(x.matrix[1]); free(x.matrix);
 
     sleep(1);
+
+    /* Superposicion completa + puerta X */
+if (rank == 0) printf("\n=== 3 qubits, superposicion completa + puerta X en qubit 0 ===\n");
+struct state_vector sv_x, sv_x2;
+state_init(&sv_x, 3, 1);
+state_init_mpi(&sv_x, 1);
+struct qgate hx = build_hadamard();
+apply_gate(&sv_x, &hx, (unsigned int[]){0}, 1, NULL, 0, NULL, 0, &sv_x2);
+free(hx.matrix[0]); free(hx.matrix[1]); free(hx.matrix);
+struct qgate xx = build_X();
+struct state_vector sv_x3;
+apply_gate(&sv_x2, &xx, (unsigned int[]){0}, 1, NULL, 0, NULL, 0, &sv_x3);
+free(xx.matrix[0]); free(xx.matrix[1]); free(xx.matrix);
+if (rank == 0) printf("--- Estado tras H + X ---\n");
+print_state(&sv_x3, rank, "state");
+state_clear(&sv_x); state_clear(&sv_x2); state_clear(&sv_x3);
+sleep(1);
+
+
+/* Superposicion completa + puerta Z */
+if (rank == 0) printf("\n=== 3 qubits, superposicion completa + puerta Z en qubit 0 ===\n");
+struct state_vector sv_z, sv_z2;
+state_init(&sv_z, 3, 1);
+state_init_mpi(&sv_z, 1);
+struct qgate hz = build_hadamard();
+apply_gate(&sv_z, &hz, (unsigned int[]){0}, 1, NULL, 0, NULL, 0, &sv_z2);
+free(hz.matrix[0]); free(hz.matrix[1]); free(hz.matrix);
+struct qgate zz = build_Z();
+struct state_vector sv_z3;
+apply_gate(&sv_z2, &zz, (unsigned int[]){0}, 1, NULL, 0, NULL, 0, &sv_z3);
+free(zz.matrix[0]); free(zz.matrix[1]); free(zz.matrix);
+if (rank == 0) printf("--- Estado tras H + Z ---\n");
+print_state(&sv_z3, rank, "state");
+state_clear(&sv_z); state_clear(&sv_z2); state_clear(&sv_z3);
+sleep(1);
 
     /* Tests puerta Z */
     struct qgate z = build_Z();
