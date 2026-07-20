@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 /* Construye la puerta Hadamard */
 struct qgate build_hadamard()
@@ -21,6 +22,38 @@ struct qgate build_hadamard()
     h.matrix[1][0] = inv_sqrt2 + 0.0 * I;
     h.matrix[1][1] = -inv_sqrt2 + 0.0 * I;
     return h;
+}
+
+/* Construye la puerta X (NOT) */
+struct qgate build_X()
+{
+    struct qgate x;
+    x.num_qubits = 1;
+    x.size = 2;
+    x.matrix = malloc(2 * sizeof(COMPLEX_TYPE *));
+    x.matrix[0] = malloc(2 * sizeof(COMPLEX_TYPE));
+    x.matrix[1] = malloc(2 * sizeof(COMPLEX_TYPE));
+    x.matrix[0][0] = 0.0 + 0.0 * I;
+    x.matrix[0][1] = 1.0 + 0.0 * I;
+    x.matrix[1][0] = 1.0 + 0.0 * I;
+    x.matrix[1][1] = 0.0 + 0.0 * I;
+    return x;
+}
+
+/* Construye la puerta Z (Phase flip) */
+struct qgate build_Z()
+{
+    struct qgate z;
+    z.num_qubits = 1;
+    z.size = 2;
+    z.matrix = malloc(2 * sizeof(COMPLEX_TYPE *));
+    z.matrix[0] = malloc(2 * sizeof(COMPLEX_TYPE));
+    z.matrix[1] = malloc(2 * sizeof(COMPLEX_TYPE));
+    z.matrix[0][0] = 1.0 + 0.0 * I;
+    z.matrix[0][1] = 0.0 + 0.0 * I;
+    z.matrix[1][0] = 0.0 + 0.0 * I;
+    z.matrix[1][1] = -1.0 + 0.0 * I;
+    return z;
 }
 
 /* Imprime el estado local de cada proceso */
@@ -81,6 +114,30 @@ void test_hadamard_pos(int num_qubits, unsigned int target_qubit,
     state_clear(&new_sv);
 }
 
+void test_gate(int num_qubits, unsigned int target_qubit,
+               NATURAL_TYPE init_pos, struct qgate *gate,
+               const char *gate_name, int rank)
+{
+    if (rank == 0)
+        printf("\n=== %d qubits, estado inicial |%lld>, puerta %s en qubit %d ===\n",
+               num_qubits, (long long)init_pos, gate_name, target_qubit);
+    struct state_vector sv;
+    state_init(&sv, num_qubits, 1);
+    state_init_mpi(&sv, 1);
+    if (init_pos != 0) {
+        pdset(&sv, 0, 0.0 + 0.0 * I);
+        pdset(&sv, init_pos, 1.0 + 0.0 * I);
+    }
+    if (rank == 0) printf("--- Estado inicial ---\n");
+    print_state(&sv, rank, "state");
+    struct state_vector new_sv;
+    apply_gate(&sv, gate, &target_qubit, 1, NULL, 0, NULL, 0, &new_sv);
+    if (rank == 0) printf("--- Estado tras %s ---\n", gate_name);
+    print_state(&new_sv, rank, "new_state");
+    state_clear(&sv);
+    state_clear(&new_sv);
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
@@ -106,6 +163,40 @@ int main(int argc, char **argv)
 
     /* Test 5: 5 qubits, estado |00001> (posicion 1), Hadamard en qubit 0 */
     test_hadamard_pos(5, 0, 1, rank);
+
+    /* Test superposicion completa */
+if (rank == 0) printf("\n=== 3 qubits, superposicion completa (H en todos los qubits) ===\n");
+struct state_vector sv3;
+state_init(&sv3, 3, 1);
+state_init_mpi(&sv3, 1);
+struct qgate h2 = build_hadamard();
+struct state_vector sv3b, sv3c, sv3d;
+apply_gate(&sv3, &h2, (unsigned int[]){0}, 1, NULL, 0, NULL, 0, &sv3b);
+apply_gate(&sv3b, &h2, (unsigned int[]){1}, 1, NULL, 0, NULL, 0, &sv3c);
+apply_gate(&sv3c, &h2, (unsigned int[]){2}, 1, NULL, 0, NULL, 0, &sv3d);
+if (rank == 0) printf("--- Estado tras H en todos los qubits ---\n");
+print_state(&sv3d, rank, "state");
+free(h2.matrix[0]); free(h2.matrix[1]); free(h2.matrix);
+state_clear(&sv3); state_clear(&sv3b); state_clear(&sv3c); state_clear(&sv3d);
+sleep(1);
+
+/* Test escalabilidad */
+test_hadamard_pos(7, 0, 0, rank);
+sleep(1);
+
+    /* Tests puerta X */
+    struct qgate x = build_X();
+    test_gate(3, 0, 0, &x, "X", rank);
+    test_gate(3, 0, 1, &x, "X", rank);
+    free(x.matrix[0]); free(x.matrix[1]); free(x.matrix);
+
+    sleep(1);
+
+    /* Tests puerta Z */
+    struct qgate z = build_Z();
+    test_gate(3, 0, 0, &z, "Z", rank);
+    test_gate(3, 0, 1, &z, "Z", rank);
+    free(z.matrix[0]); free(z.matrix[1]); free(z.matrix);
 
     MPI_Finalize();
     return 0;
