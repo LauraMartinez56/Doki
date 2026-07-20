@@ -149,79 +149,73 @@ unsigned char apply_gate(struct state_vector *state, struct qgate *gate,
 REAL_TYPE norm_const;
 unsigned char exit_code;
 NATURAL_TYPE control_mask, anticontrol_mask, i, reg_index;
-NATURAL_TYPE base_idx, rem_idx, local_start, local_end;
 unsigned int j, k, row;
 COMPLEX_TYPE sum;
 COMPLEX_TYPE *full_vector;
-
 if (new_state == NULL)
 return 10;
-
 exit_code = state_init(new_state, state->num_qubits, false);
-if (exit_code != 0) {
-free(new_state);
+if (exit_code != 0) {free(new_state);
 return exit_code;
 }
-
+state_init_mpi(new_state, 0);
 control_mask = NATURAL_ZERO;
 for (j = 0; j < num_controls; j++)
 control_mask |= NATURAL_ONE << controls[j];
 anticontrol_mask = NATURAL_ZERO;
 for (j = 0; j < num_anticontrols; j++)
 anticontrol_mask |= NATURAL_ONE << anticontrols[j];
-
 /* Recopilar vector completo en todos los procesos */
 full_vector = pdgather(state);
-
-/* Calcular rango local de este proceso */
-base_idx = state->global_size / state->nprocs;
-rem_idx  = state->global_size % state->nprocs;
-if (state->rank < (int)rem_idx) {
-local_start = state->rank * (base_idx + 1);
-local_end   = local_start + base_idx + 1;
-} else {
-local_start = rem_idx * (base_idx + 1) +
-      (state->rank - rem_idx) * base_idx;
-local_end   = local_start + base_idx;
-}
-
+/* Calcular todos los elementos del nuevo estado */
 norm_const = 0;
-for (i = local_start; i < local_end; i++) {
-if ((i & control_mask) == control_mask &&
-    (i & anticontrol_mask) == 0) {
-sum = COMPLEX_ZERO;
-reg_index = i;
-for (j = 0; j < gate->size; j++) {
-row = 0;
-for (k = 0; k < num_targets; k++) {
-row += ((i & (NATURAL_ONE
-      << targets[k])) != 0)
-       << k;
-if ((j & (NATURAL_ONE << k)) != 0)
-reg_index |= NATURAL_ONE
-     << targets[k];
-else
-reg_index &= ~(NATURAL_ONE
-       << targets[k]);
-}
-sum = COMPLEX_ADD(sum,
-COMPLEX_MULT(
-COMPLEX_DIV_R(full_vector[reg_index],
-      state->norm_const),
-gate->matrix[row][j]));
-}
-} else {
-sum = COMPLEX_DIV_R(full_vector[i], state->norm_const);
-}
-pdset(new_state, i, sum);
-norm_const += pow(RE(sum), 2) + pow(IM(sum), 2);
+for (i = 0; i < state->global_size; i++) {
+    if ((i & control_mask) == control_mask &&
+        (i & anticontrol_mask) == 0) {
+        sum = COMPLEX_ZERO;
+        reg_index = i;
+        for (j = 0; j < gate->size; j++) {
+            row = 0;
+            for (k = 0; k < num_targets; k++) {
+                row += ((i & (NATURAL_ONE << targets[k])) != 0) << k;
+                if ((j & (NATURAL_ONE << k)) != 0)
+                    reg_index |= NATURAL_ONE << targets[k];
+                else
+                    reg_index &= ~(NATURAL_ONE << targets[k]);
+            }
+            sum = COMPLEX_ADD(sum,
+                COMPLEX_MULT(
+                    COMPLEX_DIV_R(full_vector[reg_index], state->norm_const),
+                    gate->matrix[row][j]));
+        }
+    } else {
+        sum = COMPLEX_DIV_R(full_vector[i], state->norm_const);
+    }
+    if ((int)(i % state->nprocs) == state->rank)
+        norm_const += pow(RE(sum), 2) + pow(IM(sum), 2);
+    pdset(new_state, i, sum);
 }
 free(full_vector);
-/* Reducir norm_const entre todos los procesos */
-REAL_TYPE global_norm;
-MPI_Allreduce(&norm_const, &global_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-new_state->norm_const = sqrt(global_norm);
-
+/* Reducir norm_const entre todos los procesos usando Send/Recv */
+REAL_TYPE global_norm = norm_const;
+if (state->rank == 0)
+  {
+    REAL_TYPE partial;
+    for (int p = 1; p < state->nprocs; p++)
+      {
+        MPI_Recv (&partial, 1, MPI_DOUBLE, p, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        global_norm += partial;
+      }
+    global_norm = sqrt(global_norm);
+    for (int p = 1; p < state->nprocs; p++)
+      MPI_Send (&global_norm, 1, MPI_DOUBLE, p, 2, MPI_COMM_WORLD);
+  }
+else
+  {
+    MPI_Send (&norm_const, 1, MPI_DOUBLE, 0, 2, MPI_COMM_WORLD);
+    MPI_Recv (&global_norm, 1, MPI_DOUBLE, 0, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+  }
+new_state->norm_const = global_norm;
 return 0;
 }
 

@@ -181,32 +181,32 @@ state_mem_size (struct state_vector *this)
 void
 state_init_mpi (struct state_vector *this, int init)
 {
-  NATURAL_TYPE base, rem;
-
+  NATURAL_TYPE rem;
   MPI_Comm_rank (MPI_COMM_WORLD, &this->rank);
   MPI_Comm_size (MPI_COMM_WORLD, &this->nprocs);
-
   this->global_size = this->size;
 
-  base = this->global_size / this->nprocs;
-  rem  = this->global_size % this->nprocs;
-
-  /* Los primeros 'rem' procesos reciben un elemento extra */
+  /* Distribución cíclica: local_size = global_size / nprocs
+     Los primeros 'rem' procesos reciben un elemento extra */
+  rem = this->global_size % this->nprocs;
   if (this->rank < (int)rem)
-    this->local_size = base + 1;
+    this->local_size = this->global_size / this->nprocs + 1;
   else
-    this->local_size = base;
+    this->local_size = this->global_size / this->nprocs;
 
   /* Reservar memoria para el vector local de este proceso */
   this->local_vector = malloc (this->local_size * sizeof (COMPLEX_TYPE));
-
-  /* Inicializar a cero (malloc no limpia memoria) */
+  /* Inicializar a cero */
   for (NATURAL_TYPE i = 0; i < this->local_size; i++)
     this->local_vector[i] = COMPLEX_ZERO;
 
+  /* Inicializar todo el vector a cero para todos los procesos */
+  for (NATURAL_TYPE j = 0; j < this->size; j++)
+    this->vector[j / COMPLEX_ARRAY_SIZE][j % COMPLEX_ARRAY_SIZE] = COMPLEX_ZERO;
+
   /* Solo el proceso 0 tiene la amplitud 1 en la posicion 0 */
-  if (init && this->rank != 0)
-    this->vector[0][0] = COMPLEX_ZERO;
+  if (init && this->rank == 0)
+    this->vector[0][0] = 1.0 + 0.0 * I;
 
   printf ("Soy proc %d, tam global %lld, tam local %lld\n",
           this->rank, (long long)this->global_size,
@@ -219,25 +219,14 @@ state_init_mpi (struct state_vector *this, int init)
 COMPLEX_TYPE
 pdget (struct state_vector *this, NATURAL_TYPE i)
 {
-  NATURAL_TYPE base, rem, local_i, offset;
+  NATURAL_TYPE local_i;
   int owner;
 
-  base = this->global_size / this->nprocs;
-  rem  = this->global_size % this->nprocs;
+  /*Distribución cíclica*/
 
-  /* Calcular qué proceso tiene el índice i y su índice local */
-  if (i < rem * (base + 1))
-    {
-      owner   = (int)(i / (base + 1));
-      local_i = i % (base + 1);
-    }
-  else
-    {
-      offset  = i - rem * (base + 1);
-      owner   = (int)(rem + offset / base);
-      local_i = offset % base;
-    }
-
+  owner = (int)(i % this->nprocs);
+  local_i = i / this->nprocs;
+  
   if (owner == this->rank)
     {
       /* Dato local: acceso directo al vector */
@@ -254,6 +243,7 @@ pdget (struct state_vector *this, NATURAL_TYPE i)
                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
       return val;
     }
+
 }
 
 /* pdset: escribe un valor en la posición i del vector distribuido.
@@ -261,29 +251,22 @@ pdget (struct state_vector *this, NATURAL_TYPE i)
 void
 pdset (struct state_vector *this, NATURAL_TYPE i, COMPLEX_TYPE value)
 {
-  NATURAL_TYPE base, rem, local_i, offset;
+  NATURAL_TYPE local_i;
   int owner;
-
-  base = this->global_size / this->nprocs;
-  rem  = this->global_size % this->nprocs;
-
-  /* Calcular qué proceso tiene el índice i y su índice local */
-  if (i < rem * (base + 1))
+  
+  /* Distribución cíclica */
+  owner   = (int)(i % this->nprocs);
+  local_i = i / this->nprocs;
+  
+  if (owner == this->rank)
     {
-      owner   = (int)(i / (base + 1));
-      local_i = i % (base + 1);
+      /* Dato local: escribir directamente */
+      this->vector[local_i / COMPLEX_ARRAY_SIZE][local_i % COMPLEX_ARRAY_SIZE] = value;
     }
   else
     {
-      offset  = i - rem * (base + 1);
-      owner   = (int)(rem + offset / base);
-      local_i = offset % base;
-    }
-
-  /* Solo escribir si el dato pertenece a este proceso */
-  if (owner == this->rank)
-    {
-      this->vector[local_i / COMPLEX_ARRAY_SIZE][local_i % COMPLEX_ARRAY_SIZE] = value;
+      /* Dato remoto: enviarlo al proceso owner */
+      MPI_Send (&value, 1, MPI_DOUBLE_COMPLEX, owner, 3, MPI_COMM_WORLD);
     }
 }
 
@@ -293,31 +276,55 @@ pdset (struct state_vector *this, NATURAL_TYPE i, COMPLEX_TYPE value)
 COMPLEX_TYPE *
 pdgather (struct state_vector *this)
 {
-  COMPLEX_TYPE *full_vector = malloc (this->global_size * sizeof (COMPLEX_TYPE));
-
-  int *recvcounts = malloc (this->nprocs * sizeof (int));
-  int *displs = malloc (this->nprocs * sizeof (int));
-
-  NATURAL_TYPE base = this->global_size / this->nprocs;
-  NATURAL_TYPE rem  = this->global_size % this->nprocs;
-
-  for (int p = 0; p < this->nprocs; p++)
+  COMPLEX_TYPE *full_vector = calloc (this->global_size, sizeof (COMPLEX_TYPE));
+  
+  if (this->rank == 0)
     {
-      recvcounts[p] = (p < (int)rem) ? (int)(base + 1) : (int)base;
-      displs[p] = (p == 0) ? 0 : displs[p-1] + recvcounts[p-1];
+      /* Proceso 0: colocar sus propios elementos */
+      for (NATURAL_TYPE i = 0; i < this->local_size; i++)
+        {
+          NATURAL_TYPE global_i = i * this->nprocs; /* distribución cíclica */
+          full_vector[global_i] = this->vector[i / COMPLEX_ARRAY_SIZE][i % COMPLEX_ARRAY_SIZE];
+        }
+      /* Recibir elementos del resto de procesos */
+      for (int p = 1; p < this->nprocs; p++)
+        {
+          NATURAL_TYPE remote_size = this->global_size / this->nprocs;
+          if (p < (int)(this->global_size % this->nprocs))
+            remote_size++;
+          COMPLEX_TYPE *buf = malloc (remote_size * sizeof (COMPLEX_TYPE));
+          MPI_Recv (buf, (int)remote_size, MPI_DOUBLE_COMPLEX, p, 0,
+                    MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+          for (NATURAL_TYPE i = 0; i < remote_size; i++)
+            {
+              NATURAL_TYPE global_i = i * this->nprocs + p;
+              full_vector[global_i] = buf[i];
+            }
+          free (buf);
+        }
+    }
+  else
+    {
+      /* Resto de procesos: enviar sus elementos al proceso 0 */
+      COMPLEX_TYPE *send_buf = malloc (this->local_size * sizeof (COMPLEX_TYPE));
+      for (NATURAL_TYPE i = 0; i < this->local_size; i++)
+        send_buf[i] = this->vector[i / COMPLEX_ARRAY_SIZE][i % COMPLEX_ARRAY_SIZE];
+      MPI_Send (send_buf, (int)this->local_size, MPI_DOUBLE_COMPLEX, 0, 0,
+                MPI_COMM_WORLD);
+      free (send_buf);
     }
 
-  COMPLEX_TYPE *send_buf = malloc (this->local_size * sizeof (COMPLEX_TYPE));
-  for (NATURAL_TYPE i = 0; i < this->local_size; i++)
-    send_buf[i] = this->vector[i / COMPLEX_ARRAY_SIZE][i % COMPLEX_ARRAY_SIZE];
-
-  MPI_Allgatherv (send_buf, (int)this->local_size, MPI_DOUBLE_COMPLEX,
-                  full_vector, recvcounts, displs, MPI_DOUBLE_COMPLEX,
+  /* Difundir el vector completo a todos los procesos*/
+  if (this->rank == 0)
+    {
+      for (int p = 1; p < this->nprocs; p++)
+        MPI_Send (full_vector, (int)this->global_size, MPI_DOUBLE_COMPLEX, p, 1,
                   MPI_COMM_WORLD);
-
-  free (send_buf);
-  free (recvcounts);
-  free (displs);
-
+    }
+  else
+    {
+      MPI_Recv (full_vector, (int)this->global_size, MPI_DOUBLE_COMPLEX, 0, 1,
+                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
   return full_vector;
 }

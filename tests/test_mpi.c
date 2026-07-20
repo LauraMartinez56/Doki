@@ -26,35 +26,29 @@ struct qgate build_hadamard()
 /* Imprime el estado local de cada proceso */
 void print_state(struct state_vector *sv, int rank, const char *label)
 {
-    MPI_Barrier(MPI_COMM_WORLD);
-    NATURAL_TYPE base = sv->global_size / sv->nprocs;
-    NATURAL_TYPE rem  = sv->global_size % sv->nprocs;
-    NATURAL_TYPE local_start = (rank < (int)rem) ?
-        rank * (base + 1) :
-        rem * (base + 1) + (rank - rem) * base;
-    NATURAL_TYPE local_end = local_start + sv->local_size;
-
-    for (NATURAL_TYPE i = local_start; i < local_end; i++)
+    for (NATURAL_TYPE local_i = 0; local_i < sv->local_size; local_i++)
+    {
+        NATURAL_TYPE i = local_i * sv->nprocs + rank; /* distribución cíclica */
+        COMPLEX_TYPE val = sv->vector[local_i / COMPLEX_ARRAY_SIZE][local_i % COMPLEX_ARRAY_SIZE];
         printf("[proc %d] %s[%lld] = %f + %fi\n", rank, label,
                (long long)i,
-               __real__ pdget(sv, i),
-               __imag__ pdget(sv, i));
-    MPI_Barrier(MPI_COMM_WORLD);
+               __real__ val,
+               __imag__ val);
+    }
 }
 
 /* Test: aplica Hadamard a un estado inicial con amplitud 1 en la posicion init_pos */
 void test_hadamard_pos(int num_qubits, unsigned int target_qubit,
                        NATURAL_TYPE init_pos, int rank)
 {
-    MPI_Barrier(MPI_COMM_WORLD);
     if (rank == 0)
         printf("\n=== %d qubits, estado inicial |%lld>, Hadamard en qubit %d ===\n",
                num_qubits, (long long)init_pos, target_qubit);
-    MPI_Barrier(MPI_COMM_WORLD);
 
     /* Inicializar estado a cero */
     struct state_vector sv;
     unsigned char result = state_init(&sv, num_qubits, 1);
+    state_init_mpi(&sv, 1);
     if (result != 0) {
         printf("[proc %d] Error en state_init: %d\n", rank, result);
         return;
